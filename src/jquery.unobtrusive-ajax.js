@@ -1,21 +1,3 @@
-// Unobtrusive Ajax support library for jQuery
-// Copyright (C) Microsoft Corporation. All rights reserved.
-// @version <placeholder>
-// 
-// Microsoft grants you the right to use these script files for the sole
-// purpose of either: (i) interacting through your browser with the Microsoft
-// website or online service, subject to the applicable licensing or use
-// terms; or (ii) using the files as included with a Microsoft product subject
-// to that product's license terms. Microsoft reserves all other rights to the
-// files not expressly granted by Microsoft, whether by implication, estoppel
-// or otherwise. Insofar as a script file is dual licensed under GPL,
-// Microsoft neither took the code under GPL nor distributes it thereunder but
-// under the terms set out in this paragraph. All notices and licenses
-// below are for informational purposes only.
-
-/*jslint white: true, browser: true, onevar: true, undef: true, nomen: true, eqeqeq: true, plusplus: true, bitwise: true, regexp: true, newcap: true, immed: true, strict: false */
-/*global window: false, jQuery: false */
-
 (function ($) {
     var data_click = "unobtrusiveAjaxClick",
         data_target = "unobtrusiveAjaxClickTarget",
@@ -29,8 +11,18 @@
         if (typeof (fn) === "function") {
             return fn;
         }
+
         argNames.push(code);
         return Function.constructor.apply(null, argNames);
+    }
+
+    function getArguments(code) {
+        code = code.substr(code.indexOf("(") + 1, code.length);
+        code = code.substr(0, code.indexOf(")"));
+        code = code.replace(/\s/g, '');
+        code = code.split(',');
+        code.unshift('xhr');
+        return code;
     }
 
     function isMethodProxySafe(method) {
@@ -46,7 +38,7 @@
     function asyncOnSuccess(element, data, contentType) {
         var mode;
 
-        if (contentType.indexOf("application/x-javascript") !== -1) {  // jQuery already executes JavaScript for us
+        if (contentType.indexOf("application/x-javascript") !== -1) {
             return;
         }
 
@@ -56,10 +48,15 @@
 
             switch (mode) {
                 case "BEFORE":
-                    $(update).prepend(data);
+                    top = update.firstChild;
+                    $("<div />").html(data).contents().each(function () {
+                        update.insertBefore(this, top);
+                    });
                     break;
                 case "AFTER":
-                    $(update).append(data);
+                    $("<div />").html(data).contents().each(function () {
+                        update.appendChild(this);
+                    });
                     break;
                 case "REPLACE-WITH":
                     $(update).replaceWith(data);
@@ -85,26 +82,34 @@
         $.extend(options, {
             type: element.getAttribute("data-ajax-method") || undefined,
             url: element.getAttribute("data-ajax-url") || undefined,
-            cache: (element.getAttribute("data-ajax-cache") || "").toLowerCase() === "true",
+            cache: !!element.getAttribute("data-ajax-cache"),
             beforeSend: function (xhr) {
-                var result;
                 asyncOnBeforeSend(xhr, method);
-                result = getFunction(element.getAttribute("data-ajax-begin"), ["xhr"]).apply(element, arguments);
-                if (result !== false) {
+
+                var ele = element.getAttribute("data-ajax-begin");
+                var func = getFunction(ele, ["xhr"]);
+                var funcArgs = getArguments(ele);
+
+                func.apply(element, funcArgs);
+
+                if (func !== false) {
                     loading.show(duration);
                 }
-                return result;
+                return func;
             },
             complete: function () {
                 loading.hide(duration);
-                getFunction(element.getAttribute("data-ajax-complete"), ["xhr", "status"]).apply(element, arguments);
+                var func = getFunction(element.getAttribute("data-ajax-complete"), ["xhr", "status"]);
+                func.apply(element, arguments);
             },
             success: function (data, status, xhr) {
                 asyncOnSuccess(element, data, xhr.getResponseHeader("Content-Type") || "text/html");
-                getFunction(element.getAttribute("data-ajax-success"), ["data", "status", "xhr"]).apply(element, arguments);
+                var func = getFunction(element.getAttribute("data-ajax-success"), ["data", "status", "xhr"]);
+                func.apply(element, arguments);
             },
             error: function () {
-                getFunction(element.getAttribute("data-ajax-failure"), ["xhr", "status", "error"]).apply(element, arguments);
+                var func = getFunction(element.getAttribute("data-ajax-failure"), ["xhr", "status", "error"]);
+                func.apply(element, arguments);
             }
         });
 
@@ -115,6 +120,30 @@
             options.type = "POST";
             options.data.push({ name: "X-HTTP-Method-Override", value: method });
         }
+
+        // change here:
+        // Check for a Form POST with enctype=multipart/form-data
+        // add the input file that were not previously included in the serializeArray()
+        // set processData and contentType to false
+        var $element = $(element);
+        if ($element.is("form") && $element.attr("enctype") == "multipart/form-data") {
+            var formdata = new FormData();
+            $.each(options.data, function (i, v) {
+                formdata.append(v.name, v.value);
+            });
+            $("input[type=file]", $element).each(function () {
+                var file = this;
+                $.each(file.files, function (n, v) {
+                    formdata.append(file.name, v);
+                });
+            });
+            $.extend(options, {
+                processData: false,
+                contentType: false,
+                data: formdata
+            });
+        }
+        // end change
 
         $.ajax(options);
     }
@@ -166,7 +195,7 @@
     $(document).on("submit", "form[data-ajax=true]", function (evt) {
         var clickInfo = $(this).data(data_click) || [],
             clickTarget = $(this).data(data_target),
-            isCancel = clickTarget && (clickTarget.hasClass("cancel") || clickTarget.attr('formnovalidate') !== undefined);
+            isCancel = clickTarget && clickTarget.hasClass("cancel");
         evt.preventDefault();
         if (!isCancel && !validate(this)) {
             return;
